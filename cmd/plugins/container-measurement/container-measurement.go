@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/url"
 	"strings"
@@ -69,9 +68,19 @@ func containerName(pod *api.PodSandbox, container *api.Container) string {
 func (p *plugin) PostCreateContainer(ctx context.Context, pod *api.PodSandbox, container *api.Container) error {
 	name := containerName(pod, container)
 	logger.Infof("Container %s has been created", name)
+	fmt.Printf("Container %s has been created", name)
+	containerdClient, err := containerd.New(DefaultAddress)
+	if err != nil {
+		log.Fatalf("Failed to connect to containerd: %+v ", err)
+	}
+	defer containerdClient.Close()
+
+	tpm, err := tpm2.OpenTPM("/dev/tpmrm0")
+	if err != nil {
+		log.Fatalf("Failed to open the tpm: %+v ", err)
+	}
+	defer tpm.Close()
 	containerId := container.Id
-	containerdClient := ctx.Value("containerd").(*containerd.Client)
-	tpm := ctx.Value("tpm").(io.ReadWriteCloser)
 	c, err := containerdClient.LoadContainer(ctx, containerId)
 	if err != nil {
 		logger.Errorf("Failed to load container: %+v", err)
@@ -157,28 +166,7 @@ func main() {
 		err        error
 	)
 
-	containerdClient, err := containerd.New(DefaultAddress)
-	if err != nil {
-		log.Fatalf("Failed to connect to containerd: %+v ", err)
-	}
-	defer containerdClient.Close()
-
-	tpm, err := tpm2.OpenTPM("/dev/tpmrm0")
-	if err != nil {
-		log.Fatalf("Failed to open the tpm: %+v ", err)
-	}
-	defer tpm.Close()
-
-	gceAk, err := client.GceAttestationKeyECC(tpm)
-	if err != nil {
-		log.Fatalf("Failed to get GCE attestation key: %+v ", err)
-	}
-	defer gceAk.Close()
-
 	ctx := context.Background()
-	context.WithValue(ctx, "containerd", containerdClient)
-
-	context.WithValue(ctx, "tpm", tpm)
 
 	logger = logrus.StandardLogger()
 	logger.SetFormatter(&logrus.TextFormatter{
@@ -198,6 +186,10 @@ func main() {
 	}
 
 	p := &plugin{}
+
+	if p.stub, err = stub.New(p, opts...); err != nil {
+		log.Fatalf("failed to create plugin stub: %v", err)
+	}
 
 	err = p.stub.Run(ctx)
 	if err != nil {
